@@ -10,7 +10,7 @@ TCP_SERVER_PORT = 5001
 MAX_RETRIES = 5
 RETRY_DELAY = 3
 MAX_CLIENTS = 10
-PEER_IPS = ["10.176.217.173"]
+PEER_IPS = ["10.176.153.235"]
 ADAPTER_NAME = 'Connect Tunnel'
 
 # === Semaphores ===
@@ -47,7 +47,7 @@ def get_ip_of_adapter(adapter_name):
 
 
 # === Handle Incoming Client Connection ===
-def handle_client(conn, addr, socketio, messages):
+def handle_client(conn, addr, socketio, messages, message_handler):
     with client_semaphore:
         print(f"[+] Connection from {addr}")
         try:
@@ -56,33 +56,64 @@ def handle_client(conn, addr, socketio, messages):
                 if not data:
                     break
 
-                print(data)
+                print(f"[+] Received from peer {addr}: {data}")
                 messages.append(data)
 
-                if ":" in data:
-                    sender, msg = data.split(":", 1)
-                    socketio.emit("receive_message", {"sender": sender.strip(), "message": msg.strip()})
+                # Use the message handler function to process the message
+                if message_handler:
+                    message_handler(data, socketio)
                 else:
-                    socketio.emit("receive_message", {"sender": "Unknown", "message": data.strip()})
+                    # Fallback to old behavior
+                    if ":" in data:
+                        sender, msg = data.split(":", 1)
+                        socketio.emit("receive_message", {
+                            "sender": sender.strip(), 
+                            "message": msg.strip(),
+                            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+                        })
+                    else:
+                        socketio.emit("receive_message", {
+                            "sender": "Unknown", 
+                            "message": data.strip(),
+                            "timestamp": time.strftime('%Y-%m-%d %H:%M:%S')
+                        })
+                        
         except Exception as e:
-            print(f"[!] Error receiving: {e}")
+            print(f"[!] Error receiving from {addr}: {e}")
         finally:
             conn.close()
+            if conn in client_sockets:
+                client_sockets.remove(conn)
             print(f"[-] Disconnected: {addr}")
 
 
 # === Start TCP Server ===
-def start_tcp_server(local_ip, socketio, messages):
+def start_tcp_server(local_ip, socketio, messages, message_handler=None):
     def server_thread():
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind((local_ip, TCP_SERVER_PORT))
-        server.listen(5)
-        print(f"[+] TCP Server listening on {local_ip}:{TCP_SERVER_PORT}")
+        
+        try:
+            server.bind((local_ip, TCP_SERVER_PORT))
+            server.listen(5)
+            print(f"[+] TCP Server listening on {local_ip}:{TCP_SERVER_PORT}")
 
-        while True:
-            conn, addr = server.accept()
-            threading.Thread(target=handle_client, args=(conn, addr, socketio, messages), daemon=True).start()
+            while True:
+                try:
+                    conn, addr = server.accept()
+                    client_sockets.append(conn)
+                    threading.Thread(
+                        target=handle_client, 
+                        args=(conn, addr, socketio, messages, message_handler), 
+                        daemon=True
+                    ).start()
+                except Exception as e:
+                    print(f"[!] Error accepting connection: {e}")
+                    
+        except Exception as e:
+            print(f"[!] Error starting TCP server: {e}")
+        finally:
+            server.close()
 
     threading.Thread(target=server_thread, daemon=True).start()
 
@@ -91,16 +122,22 @@ def start_tcp_server(local_ip, socketio, messages):
 def connect_to_peers():
     def connection_thread():
         for ip in PEER_IPS:
+            print(f"[i] Attempting to connect to peer at {ip}:{TCP_SERVER_PORT}")
+            
             for attempt in range(1, MAX_RETRIES + 1):
                 with peer_connect_semaphore:
                     try:
                         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        s.settimeout(10)  # Set connection timeout
                         s.connect((ip, TCP_SERVER_PORT))
                         client_sockets.append(s)
                         print(f"[+] Connected to peer at {ip}:{TCP_SERVER_PORT}")
                         break
                     except Exception as e:
                         print(f"[!] Attempt {attempt}: Failed to connect to {ip}:{TCP_SERVER_PORT} - {e}")
-                        time.sleep(RETRY_DELAY)
+                        if attempt < MAX_RETRIES:
+                            time.sleep(RETRY_DELAY)
+                        else:
+                            print(f"[!] Failed to connect to {ip} after {MAX_RETRIES} attempts")
 
     threading.Thread(target=connection_thread, daemon=True).start()

@@ -8,7 +8,7 @@ from datetime import datetime
 # === SQL Server connection via Windows Authentication ===
 params = urllib.parse.quote_plus(
     "DRIVER={ODBC Driver 17 for SQL Server};"
-    "SERVER=IN3594843W1\\SQLEXPRESS2019;"
+    "SERVER=XE3253001W1\SQLEXPRESS;"
     "DATABASE=chatdb;"
     "Trusted_Connection=yes;"
 )
